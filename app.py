@@ -1,18 +1,18 @@
+from html import escape
+
 import streamlit as st
-import pickle
-import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import tmdb
+from recommender import ContentRecommender, load_movies
 
-# Set page config - HIDE SIDEBAR
 st.set_page_config(
-    page_title="Movie Mind", 
+    page_title="Movie Mind",
     page_icon="🎬",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
-# Hide sidebar completely with CSS
+# Hide the sidebar - the page has its own buttons for getting around
 st.markdown("""
     <style>
     [data-testid="stSidebar"] {
@@ -22,62 +22,17 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# Load data
-movies = pickle.load(open("movie_list.pkl", 'rb'))
-similarity = pickle.load(open('similarity.pkl', 'rb'))
+@st.cache_resource
+def load_recommender():
+    """Build the movie index once and share it across every user session.
+
+    Without the cache Streamlit would rebuild this on every interaction.
+    """
+    movies = load_movies()
+    return movies, ContentRecommender(movies)
 
 
-# Initialize session state
-if 'selected_movie_id' not in st.session_state:
-    st.session_state.selected_movie_id = None
-if 'page' not in st.session_state:
-    st.session_state.page = "recommendations"
-
-
-# Redirect logic
-if st.session_state.page == "movie_details":
-    st.switch_page("pages/movie_details.py")
-
-
-# Cached TMDB poster fetcher with error handling
-@st.cache_data(show_spinner=False)
-def fetch_poster(movie_id):
-    try:
-        url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key=6fa00047a5d3b608cb10c3b628336ba6&language=en-US"
-        response = requests.get(url, timeout=5)
-        data = response.json()
-        poster_path = data.get('poster_path')
-        if poster_path:
-            return f"https://image.tmdb.org/t/p/w500{poster_path}"
-        return "https://via.placeholder.com/300x450?text=No+Image"
-    except Exception as e:
-        return "https://via.placeholder.com/300x450?text=No+Image"
-
-
-# Recommender function with parallel poster fetching
-def recommend(movie):
-    movie_index = movies[movies['title'] == movie].index[0]
-    distances = similarity[movie_index]
-    movie_list = sorted(list(enumerate(distances)), reverse=True, key=lambda x: x[1])[1:11]
-    
-    rec_titles, rec_ids = [], []
-    movie_ids_to_fetch = []
-    
-    for idx, _ in movie_list:
-        movie_id = movies.iloc[idx].movie_id
-        rec_titles.append(movies.iloc[idx].title)
-        rec_ids.append(movie_id)
-        movie_ids_to_fetch.append(movie_id)
-    
-    # Fetch all posters in parallel (10x faster than sequential)
-    rec_posters = [None] * len(movie_ids_to_fetch)
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_index = {executor.submit(fetch_poster, mid): i for i, mid in enumerate(movie_ids_to_fetch)}
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            rec_posters[index] = future.result()
-    
-    return rec_titles, rec_posters, rec_ids
+movies, recommender = load_recommender()
 
 
 # Enhanced CSS with #1F2833 background and white/cyan text
@@ -211,11 +166,29 @@ st.markdown("""
         box-shadow: 0 6px 15px rgba(0,0,0,0.4);
         transition: transform 0.3s ease;
     }
-    
+
     img:hover {
         transform: scale(1.08);
     }
-    
+
+    /* Posters get a fixed height so every card in a row is the same size and
+       the View Details buttons underneath line up */
+    .poster, .no-poster {
+        width: 100%;
+        height: 360px;
+        border-radius: 12px;
+        object-fit: cover;
+        box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+    }
+
+    .no-poster {
+        background: #0B0C10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #FFFFFF;
+    }
+
     /* View Details button specific styling */
     [data-testid="column"] button[kind="secondary"] {
         background: linear-gradient(135deg, #45A29E 0%, #66FCF1 100%);
@@ -290,55 +263,52 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# UI - Centered Title
+# Title
 st.markdown('<div class="movie-mind-title">MOVIE MIND</div>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">DISCOVER YOUR NEXT FAVORITE MOVIE</p>', unsafe_allow_html=True)
 
-# Center the selectbox and button
 col1, col2, col3 = st.columns([1, 2.5, 1])
 with col2:
-    selected_movie = st.selectbox("Select a movie to get recommendations:", movies['title'].values)
-    if st.button("Show Recommendations", use_container_width=True):
+    # the options are row numbers, not titles, because a few titles appear
+    # twice in the dataset and picking by title would grab the wrong movie
+    selected_row = st.selectbox(
+        "Select a movie to get recommendations:",
+        options=movies.index,
+        format_func=lambda row: movies["title"][row],
+    )
+    if st.button("Show Recommendations", width="stretch"):
         st.session_state.show_recommendations = True
 
 
-# Display recommendations with loading spinner
-if 'show_recommendations' in st.session_state and st.session_state.show_recommendations:
-    
-    # Show loading spinner while fetching
-    with st.spinner('🎬 Loading recommendations...'):
-        names, posters, ids = recommend(selected_movie)
-    
-    
+if st.session_state.get("show_recommendations"):
+    with st.spinner("🎬 Loading recommendations..."):
+        rows, _ = recommender.similar_to(selected_row, n=10)
+        recommended = movies.loc[rows]
+        posters = tmdb.fetch_posters(recommended["movie_id"])
+
     movies_per_row = 5
-    num_rows = (len(names) + movies_per_row - 1) // movies_per_row
-    
-    for row in range(num_rows):
-        # Add spacing between rows
-        if row > 0:
+    for start in range(0, len(recommended), movies_per_row):
+        if start > 0:
             st.markdown("<br>", unsafe_allow_html=True)
-        
+
+        chunk = recommended.iloc[start:start + movies_per_row]
         cols = st.columns(movies_per_row, gap="large")
-        for col_idx, col in enumerate(cols):
-            movie_idx = row * movies_per_row + col_idx
-            if movie_idx < len(names):
-                with col:
-                    # Wrap everything in a card div
-                    st.markdown('<div class="movie-card">', unsafe_allow_html=True)
-                    
-                    # Poster (larger size)
-                    if posters[movie_idx]:
-                        st.image(posters[movie_idx], use_container_width=True)
-                    else:
-                        st.markdown('<div style="height: 400px; background: #0B0C10; display: flex; align-items: center; justify-content: center; border-radius: 10px; color: #FFFFFF;">No Image</div>', unsafe_allow_html=True)
-                    
-                    # Title with fixed height
-                    st.markdown(f'<div class="movie-title">{names[movie_idx]}</div>', unsafe_allow_html=True)
-                    
-                    # Button
-                    if st.button("View Details", key=f"btn_{ids[movie_idx]}", use_container_width=True):
-                        st.session_state.selected_movie_id = ids[movie_idx]
-                        st.session_state.page = "movie_details"
-                        st.rerun()
-                    
-                    st.markdown('</div>', unsafe_allow_html=True)
+        for col, (_, movie), poster in zip(cols, chunk.iterrows(), posters[start:]):
+            with col:
+                # poster and title go out as one block so the card is a single
+                # fixed-height element - otherwise a missing poster or a title
+                # that wraps to two lines pushes that card's button out of line
+                if poster:
+                    image = f'<img class="poster" src="{poster}">'
+                else:
+                    image = '<div class="no-poster">No Image</div>'
+
+                st.markdown(
+                    f'<div class="movie-card">{image}'
+                    f'<div class="movie-title">{escape(movie["title"])}</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+                if st.button("View Details", key=f"btn_{movie['movie_id']}", width="stretch"):
+                    st.session_state.selected_movie_id = movie["movie_id"]
+                    st.switch_page("pages/movie_details.py")
