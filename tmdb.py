@@ -18,7 +18,16 @@ TIMEOUT = (3, 10)  # 3s to connect, 10s to read
 
 
 def api_key():
-    return st.secrets.get("TMDB_API_KEY", os.environ.get("TMDB_API_KEY", ""))
+    """The TMDB key, or an empty string if none is configured.
+
+    Reading st.secrets raises when there is no secrets file at all, which is
+    the normal state of a fresh deployment, so fall back to the environment.
+    """
+    try:
+        key = st.secrets.get("TMDB_API_KEY", "")
+    except Exception:
+        key = ""
+    return key or os.environ.get("TMDB_API_KEY", "")
 
 
 def fetch_poster(movie_id):
