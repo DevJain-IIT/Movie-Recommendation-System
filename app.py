@@ -281,6 +281,15 @@ with col2:
 
 
 if st.session_state.get("show_recommendations"):
+    # without a key every poster comes back empty, which looks like missing
+    # data rather than missing configuration - so say which it is
+    if not tmdb.api_key():
+        st.error(
+            "No TMDB API key found, so posters cannot load. Set TMDB_API_KEY under "
+            "Settings > Secrets if this is deployed, or in .streamlit/secrets.toml "
+            "if you are running it locally."
+        )
+
     with st.spinner("🎬 Loading recommendations..."):
         rows, _ = recommender.similar_to(selected_row, n=10)
         recommended = movies.loc[rows]
