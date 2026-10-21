@@ -36,6 +36,7 @@ CSS = """
 [data-baseweb="popover"] li, [data-baseweb="popover"] li * { color: var(--text) !important; }
 [data-baseweb="popover"] li:hover, [data-baseweb="popover"] li[aria-selected="true"] { background: var(--hover) !important; }
 [data-testid="stCheckbox"] p { color: var(--text) !important; }  /* the toggle is a checkbox */
+.st-key-themebar { align-items: flex-end; }
 
 /* buttons */
 .stButton > button {
@@ -64,8 +65,7 @@ def remember_choice():
 def apply():
     """Draw the toggle and inject the theme. Call once per page, after set_page_config."""
     dark = st.session_state.get("dark", True)
-    _, right = st.columns([5, 1])
-    with right:
+    with st.container(key="themebar"):
         st.toggle("Dark mode", value=dark, key="dark_toggle", on_change=remember_choice)
 
     colors = DARK if dark else LIGHT

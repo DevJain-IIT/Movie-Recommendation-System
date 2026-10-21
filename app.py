@@ -38,17 +38,23 @@ st.markdown("""
         text-align: center;
         font-size: 4.5rem;
         font-weight: 800;
+        line-height: 1.1;
         margin-bottom: 0.5rem;
         letter-spacing: 8px;
+    }
+    @media (max-width: 640px) {
+        .movie-mind-title { font-size: 2.6rem; letter-spacing: 4px; }
+        .subtitle { font-size: 0.9rem; letter-spacing: 1px; }
     }
     .subtitle {
         color: var(--muted) !important;
         text-align: center;
         font-size: 1.5rem;
-        margin-bottom: 3rem;
+        margin-bottom: 2rem;
         letter-spacing: 2px;
     }
-    .stTextInput, .stSelectbox { max-width: 700px; margin: 0 auto 1rem auto; }
+    /* search box, dropdown and button share one centred column */
+    .st-key-search { max-width: 700px; margin: 0 auto 2.5rem auto; gap: 1.25rem; }
 
     .movie-card {
         background: var(--surface);
@@ -74,7 +80,7 @@ st.markdown("""
         -webkit-box-orient: vertical;
         margin: 0.8rem 0 0;
         font-weight: 600;
-        font-size: 1.1rem;
+        font-size: clamp(0.85rem, 1.15vw, 1.1rem);
         color: var(--text);
         text-align: center;
         line-height: 1.4;
@@ -97,7 +103,7 @@ st.markdown("""
         color: var(--text);
     }
 
-    [data-testid="column"] button[kind="secondary"] {
+    [data-testid="stColumn"] button[kind="secondary"] {
         border-radius: 25px;
         padding: 0.7rem 1.5rem;
         font-weight: 700;
@@ -118,8 +124,7 @@ st.session_state.setdefault("query", st.session_state.get("last_query", ""))
 if "last_row" in st.session_state:
     st.session_state.setdefault("match", st.session_state["last_row"])
 
-col1, col2, col3 = st.columns([1, 2.5, 1])
-with col2:
+with st.container(key="search"):
     query = st.text_input(
         f"Search {len(movies):,} movies",
         placeholder="Type a title and press Enter, e.g. Get Out",
