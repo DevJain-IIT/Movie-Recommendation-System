@@ -3,3 +3,11 @@ venv/
 __pycache__/
 .idea/
 .streamlit/secrets.toml
+ml-32m/
+ml-32m.zip
+rt-reviews/
+cache/
+notes/
+chunks/
+rt-reviews.zip
+Dev_Jain_Non_Core_1.pdf

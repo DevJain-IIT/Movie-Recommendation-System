@@ -1,9 +1,10 @@
 from html import escape
 
+import pandas as pd
 import streamlit as st
 
 import tmdb
-from recommender import ContentRecommender, load_movies
+from recommender import load_artifacts, similar_movies
 
 st.set_page_config(
     page_title="Movie Mind",
@@ -24,15 +25,16 @@ st.markdown("""
 
 @st.cache_resource
 def load_recommender():
-    """Build the movie index once and share it across every user session.
+    """Load the prebuilt vectors once and share them between sessions."""
+    movies, signals = load_artifacts()
+    # most-rated movies first in the dropdown
+    order = movies["n_ratings"].sort_values(ascending=False, kind="stable").index
+    years = movies["year"].map(lambda y: f" ({int(y)})" if pd.notna(y) else "")
+    labels = (movies["title"] + years).tolist()
+    return movies, signals, order, labels
 
-    Without the cache Streamlit would rebuild this on every interaction.
-    """
-    movies = load_movies()
-    return movies, ContentRecommender(movies)
 
-
-movies, recommender = load_recommender()
+movies, signals, dropdown_order, labels = load_recommender()
 
 
 # Enhanced CSS with #1F2833 background and white/cyan text
@@ -273,8 +275,8 @@ with col2:
     # twice in the dataset and picking by title would grab the wrong movie
     selected_row = st.selectbox(
         "Select a movie to get recommendations:",
-        options=movies.index,
-        format_func=lambda row: movies["title"][row],
+        options=dropdown_order,
+        format_func=lambda row: labels[row],
     )
     if st.button("Show Recommendations", width="stretch"):
         st.session_state.show_recommendations = True
@@ -291,9 +293,11 @@ if st.session_state.get("show_recommendations"):
         )
 
     with st.spinner("🎬 Loading recommendations..."):
-        rows, _ = recommender.similar_to(selected_row, n=10)
+        rows = similar_movies(signals, selected_row, n=10)
         recommended = movies.loc[rows]
-        posters = tmdb.fetch_posters(recommended["movie_id"])
+        # some movies have no TMDB id, so no poster
+        tmdb_ids = [None if pd.isna(i) else int(i) for i in recommended["tmdbId"]]
+        posters = tmdb.fetch_posters(tmdb_ids)
 
     movies_per_row = 5
     for start in range(0, len(recommended), movies_per_row):
@@ -302,7 +306,9 @@ if st.session_state.get("show_recommendations"):
 
         chunk = recommended.iloc[start:start + movies_per_row]
         cols = st.columns(movies_per_row, gap="large")
-        for col, (_, movie), poster in zip(cols, chunk.iterrows(), posters[start:]):
+        for col, (row, movie), poster, tmdb_id in zip(
+            cols, chunk.iterrows(), posters[start:], tmdb_ids[start:]
+        ):
             with col:
                 # poster and title go out as one block so the card is a single
                 # fixed-height element - otherwise a missing poster or a title
@@ -314,10 +320,11 @@ if st.session_state.get("show_recommendations"):
 
                 st.markdown(
                     f'<div class="movie-card">{image}'
-                    f'<div class="movie-title">{escape(movie["title"])}</div></div>',
+                    f'<div class="movie-title">{escape(labels[row])}</div></div>',
                     unsafe_allow_html=True,
                 )
 
-                if st.button("View Details", key=f"btn_{movie['movie_id']}", width="stretch"):
-                    st.session_state.selected_movie_id = movie["movie_id"]
+                if st.button("View Details", key=f"btn_{row}", width="stretch",
+                             disabled=tmdb_id is None):
+                    st.session_state.selected_movie_id = tmdb_id
                     st.switch_page("pages/movie_details.py")

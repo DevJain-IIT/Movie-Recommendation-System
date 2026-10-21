@@ -1,121 +1,196 @@
-"""Movie recommendation models.
+"""Hybrid movie recommender on MovieLens 32M.
 
-Three recommenders that all produce a score for every movie, so they can be
-compared with the same metrics in evaluate.py:
-
-  ContentRecommender - TF-IDF on movie tags + nearest-neighbour search
-  CFRecommender      - collaborative filtering, SVD on the ratings matrix
-  hybrid_scores()    - weighted blend of the two
-
-The old version of this project stored a 4806x4806 similarity matrix as a
-185 MB pickle. This builds the same thing from a 2.5 MB csv in about a second
-and keeps only the sparse vectors in memory.
+Three signals, each stored as one unit-length vector per movie:
+  content - TF-IDF over title, genres and user tags
+  cf      - SVD factors from the ratings
+  reviews - averaged sentence embeddings of critic reviews
 """
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix
+from scipy import sparse
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import normalize
+
+DATA = Path("ml-32m")
+CACHE = Path("cache")
+ARTIFACTS = Path("artifacts")
+
+# tuned by evaluate.py (rated movies) and evaluate_cold.py (unrated movies)
+WARM_WEIGHTS = {"content": 0.2, "cf": 0.8, "reviews": 0.0}
+COLD_WEIGHTS = {"content": 0.0, "reviews": 1.0}
 
 
-def load_movies(path="movies.csv"):
-    """Load the movie table: movie_id, title, tags.
+def load_movies(data=DATA):
+    movies = pd.read_csv(data / "movies.csv")
+    links = pd.read_csv(data / "links.csv", usecols=["movieId", "tmdbId"])
+    movies = movies.merge(links, on="movieId", how="left")
+    movies["tmdbId"] = movies["tmdbId"].astype("Int64")
 
-    The source dataset repeats six movies, which would otherwise let a title
-    resolve to two different rows, so duplicates are dropped here.
-    """
-    movies = pd.read_csv(path)
-    movies = movies.drop_duplicates(subset="movie_id").reset_index(drop=True)
-    movies["tags"] = movies["tags"].fillna("")
+    # "Matrix, The (1999)" -> title "The Matrix", year 1999
+    year = movies["title"].str.extract(r"\((\d{4})\)\s*$")[0]
+    movies["year"] = pd.to_numeric(year).astype("Int16")
+    title = movies["title"].str.replace(r"\s*\(\d{4}\)\s*$", "", regex=True)
+    movies["title"] = title.str.replace(r"^(.*?), (The|A|An)(\s*\(.*\))?$", r"\2 \1\3", regex=True)
+    movies["genres"] = movies["genres"].replace("(no genres listed)", "")
     return movies
 
 
-class ContentRecommender:
-    """Recommends movies with similar tags (overview, genres, cast, crew).
+def load_ratings(movies, data=DATA):
+    """All ratings, with a `row` column that indexes into the movies table."""
+    cache_file = CACHE / "ratings.parquet"
+    if cache_file.exists():
+        return pd.read_parquet(cache_file)
 
-    TF-IDF turns each movie's tag text into a sparse vector, then
-    NearestNeighbors finds the closest vectors by cosine distance. Nothing is
-    precomputed - the index searches on demand, which is why memory stays flat.
+    ratings = pd.read_csv(
+        data / "ratings.csv",
+        dtype={"userId": "int32", "movieId": "int32", "rating": "float32", "timestamp": "int64"},
+    )
+    row_of = pd.Series(np.arange(len(movies), dtype="int32"), index=movies["movieId"])
+    ratings["row"] = ratings["movieId"].map(row_of).astype("int32")
+    ratings = ratings.drop(columns="movieId")
+
+    CACHE.mkdir(exist_ok=True)
+    ratings.to_parquet(cache_file)
+    return ratings
+
+
+def load_tags(data=DATA):
+    return pd.read_csv(data / "tags.csv", dtype={"userId": "int32", "movieId": "int32"})
+
+
+def movie_text(movies, tags):
+    """Title, genres and all user tags joined into one string per movie."""
+    tag_text = tags.dropna(subset=["tag"]).groupby("movieId")["tag"].agg(" ".join)
+    genres = movies["genres"].str.replace("-", "", regex=False).str.replace("|", " ", regex=False)
+    return movies["title"] + " " + genres + " " + movies["movieId"].map(tag_text).fillna("")
+
+
+def make_tfidf(text):
+    tfidf = TfidfVectorizer(stop_words="english", min_df=2, max_features=50_000,
+                            sublinear_tf=True, dtype=np.float32)
+    return tfidf.fit_transform(text).tocsr()
+
+
+def train_svd(ratings, n_movies, n_factors=64):
+    """Truncated SVD of the user x movie rating matrix. Unrated = 0."""
+    users, user_rows = np.unique(ratings["userId"].to_numpy(), return_inverse=True)
+    matrix = sparse.csr_matrix(
+        (ratings["rating"].to_numpy(), (user_rows, ratings["row"].to_numpy())),
+        shape=(len(users), n_movies), dtype=np.float32,
+    )
+    svd = TruncatedSVD(n_components=n_factors, random_state=42)
+    user_factors = svd.fit_transform(matrix).astype(np.float32)
+    movie_factors = svd.components_.T.astype(np.float32)
+    return users, user_factors, movie_factors, svd.singular_values_
+
+
+def svd_movie_vectors(movie_factors, singular_values):
+    # scale by S so the strong taste dimensions count more than the weak ones
+    return normalize(movie_factors * singular_values).astype(np.float32)
+
+
+class ReviewMatrix:
+    """Review vectors for the ~14k reviewed movies; every other movie is a zero row.
+
+    Faster than a sparse matrix here because each stored row is fully dense.
     """
 
-    def __init__(self, movies, max_features=5000):
-        self.movies = movies
-        self.vectorizer = TfidfVectorizer(max_features=max_features, stop_words="english")
-        self.vectors = self.vectorizer.fit_transform(movies["tags"])
-        self.index = NearestNeighbors(metric="cosine", algorithm="brute")
-        self.index.fit(self.vectors)
+    def __init__(self, rows, vectors, n_movies):
+        self.rows = rows
+        self.vectors = vectors
+        self.shape = (n_movies, vectors.shape[1])
+        self.index = np.full(n_movies, -1)
+        self.index[rows] = np.arange(len(rows))
 
-    def similar_to(self, row, n=10):
-        """Top n movies closest to the movie at `row`. Returns (rows, scores)."""
-        # ask for n+1 neighbours because a movie is always its own best match
-        distances, rows = self.index.kneighbors(self.vectors[row], n_neighbors=n + 1)
-        distances, rows = distances[0], rows[0]
-        keep = rows != row
-        # cosine similarity is 1 - cosine distance
-        return rows[keep][:n], 1 - distances[keep][:n]
+    def __getitem__(self, rows):
+        out = np.zeros((len(rows), self.shape[1]), dtype=np.float32)
+        idx = self.index[rows]
+        out[idx >= 0] = self.vectors[idx[idx >= 0]]
+        return out
 
-    def score_for_user(self, liked_rows):
-        """Score every movie against a user's taste.
-
-        Each movie scores as high as its closest match among the movies the
-        user liked. Averaging their liked movies into a single "taste vector"
-        was the obvious alternative, but it scored three times worse: somebody
-        who likes both horror and comedy is not looking for a movie halfway
-        between the two.
-        """
-        if len(liked_rows) == 0:
-            return np.zeros(self.vectors.shape[0])
-        # TF-IDF vectors are unit length, so this dot product is cosine similarity
-        similarity = self.vectors @ self.vectors[liked_rows].T
-        return np.asarray(similarity.max(axis=1).todense()).ravel()
+    def __matmul__(self, query):
+        out = np.zeros((self.shape[0], query.shape[1]), dtype=np.float32)
+        out[self.rows] = self.vectors @ query
+        return out
 
 
-class CFRecommender:
-    """Collaborative filtering by matrix factorisation (SVD).
+def load_reviews(n_movies, path=ARTIFACTS / "reviews.npz"):
+    with np.load(path) as data:
+        rows, vectors = data["rows"], data["vectors"].astype(np.float32)
+    return ReviewMatrix(rows, vectors, n_movies)
 
-    Builds a users x movies matrix of ratings and factorises it into
-    `n_factors` latent taste dimensions. Multiplying a user's factors back
-    against the movie factors predicts what they would rate everything else.
 
-    This knows nothing about what a movie is about - only about who liked what.
+def load_artifacts(path=ARTIFACTS):
+    movies = pd.read_parquet(path / "movies.parquet")
+    signals = {
+        "content": sparse.load_npz(path / "content.npz").tocsr(),
+        "cf": np.load(path / "cf.npy").astype(np.float32),
+    }
+    if (path / "reviews.npz").exists():
+        signals["reviews"] = load_reviews(len(movies), path / "reviews.npz")
+    return movies, signals
+
+
+def similarity(matrix, rows):
+    """Cosine similarity of every movie to each movie in `rows`."""
+    query = matrix[rows].T
+    # a dense query is much faster than sparse x sparse
+    if sparse.issparse(query):
+        query = query.toarray()
+    return matrix @ query
+
+
+def max_similarity(matrix, rows, batch=256):
+    """For each movie, its similarity to the closest movie in `rows`."""
+    best = np.zeros(matrix.shape[0], dtype=np.float32)
+    for start in range(0, len(rows), batch):
+        scores = similarity(matrix, rows[start:start + batch]).max(axis=1)
+        np.maximum(best, scores, out=best)
+    return best
+
+
+def blend(scores, weights):
+    """Rescale each score array to 0-1 and take the weighted sum.
+
+    A signal with all-equal scores has nothing to say, so it is skipped.
     """
-
-    def __init__(self, ratings, n_movies, n_factors=50, random_state=42):
-        self.user_ids = np.sort(ratings["userId"].unique())
-        user_position = {user: i for i, user in enumerate(self.user_ids)}
-        rows = ratings["userId"].map(user_position).to_numpy()
-
-        matrix = csr_matrix(
-            (ratings["rating"].to_numpy(), (rows, ratings["row"].to_numpy())),
-            shape=(len(self.user_ids), n_movies),
-        )
-
-        svd = TruncatedSVD(n_components=n_factors, random_state=random_state)
-        self.user_factors = svd.fit_transform(matrix)
-        self.movie_factors = svd.components_
-        self.user_position = user_position
-
-    def score_for_user(self, user_id):
-        """Predicted rating for every movie, for one user."""
-        if user_id not in self.user_position:
-            return np.zeros(self.movie_factors.shape[1])
-        return self.user_factors[self.user_position[user_id]] @ self.movie_factors
+    total = np.zeros(len(next(iter(scores.values()))), dtype=np.float32)
+    weight_used = 0.0
+    for name, values in scores.items():
+        weight = weights.get(name, 0)
+        low, high = values.min(), values.max()
+        if weight <= 0 or high == low:
+            continue
+        total += weight * (values - low) / (high - low)
+        weight_used += weight
+    return total / weight_used if weight_used else total
 
 
-def hybrid_scores(content, cf, alpha=0.5):
-    """Blend content and CF scores. alpha=1 is pure content, alpha=0 is pure CF.
+def pick_weights(signals, row):
+    """Rated movies use the warm blend, unrated ones with reviews the cold blend."""
+    if signals["cf"][row].any():
+        return WARM_WEIGHTS
+    if "reviews" in signals and signals["reviews"][[row]].any():
+        return COLD_WEIGHTS
+    return {"content": 1.0}
 
-    The two models produce scores on completely different scales (cosine
-    similarity vs predicted rating), so each is rescaled to 0-1 before mixing.
-    """
-    return alpha * _rescale(content) + (1 - alpha) * _rescale(cf)
+
+def similar_movies(signals, row, weights=None, n=10):
+    if weights is None:
+        weights = pick_weights(signals, row)
+    scores = {}
+    for name, matrix in signals.items():
+        if weights.get(name, 0) > 0:
+            scores[name] = similarity(matrix, [row]).ravel()
+    return top_k(blend(scores, weights), [row], n)
 
 
-def _rescale(scores):
-    """Squash an array into the range 0-1."""
-    low, high = scores.min(), scores.max()
-    if high == low:
-        return np.zeros_like(scores)
-    return (scores - low) / (high - low)
+def top_k(scores, exclude, k=10):
+    scores = scores.copy()
+    scores[exclude] = -np.inf
+    top = np.argpartition(scores, -k)[-k:]
+    return top[np.argsort(scores[top])[::-1]]

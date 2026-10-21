@@ -32,6 +32,8 @@ def api_key():
 
 def fetch_poster(movie_id):
     """Poster URL for one movie, or None if TMDB doesn't have one."""
+    if movie_id is None:
+        return None
     details = fetch_details(movie_id)
     if not details or not details.get("poster_path"):
         return None
