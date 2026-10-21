@@ -1,8 +1,10 @@
 import streamlit as st
 
+import theme
 import tmdb
 
 st.set_page_config(page_title="Movie Details")
+theme.apply()
 
 
 def back_button(label="← Back to Recommendations"):

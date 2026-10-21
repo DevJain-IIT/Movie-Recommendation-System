@@ -3,8 +3,9 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
+import theme
 import tmdb
-from recommender import load_artifacts, similar_movies
+from recommender import load_artifacts, movie_labels, search_movies, similar_movies
 
 st.set_page_config(
     page_title="Movie Mind",
@@ -13,271 +14,132 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Hide the sidebar - the page has its own buttons for getting around
-st.markdown("""
-    <style>
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 
 @st.cache_resource
 def load_recommender():
     """Load the prebuilt vectors once and share them between sessions."""
     movies, signals = load_artifacts()
-    # most-rated movies first in the dropdown
-    order = movies["n_ratings"].sort_values(ascending=False, kind="stable").index
-    years = movies["year"].map(lambda y: f" ({int(y)})" if pd.notna(y) else "")
-    labels = (movies["title"] + years).tolist()
-    return movies, signals, order, labels
+    labels = movie_labels(movies)
+    genres = movies["genres"].str.split("|").str[:3].str.join(", ")
+    options = (labels + "  ·  " + genres).tolist()
+    return movies, signals, labels.tolist(), labels.str.lower(), options
 
 
-movies, signals, dropdown_order, labels = load_recommender()
+movies, signals, labels, search_text, options = load_recommender()
 
+theme.apply()
 
-# Enhanced CSS with #1F2833 background and white/cyan text
 st.markdown("""
     <style>
-    /* Import font */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-    
-    /* Main container styling - #1F2833 background */
-    .main {
-        padding: 2rem;
-        background: #1F2833 !important;
-        min-height: 100vh;
-        font-family: 'Inter', sans-serif;
-    }
-    
-    /* Override Streamlit default backgrounds */
-    .stApp {
-        background: #1F2833 !important;
-    }
-    
-    /* Title styling - Centered with cyan color */
+    [data-testid="stSidebar"] { display: none; }
+
     .movie-mind-title {
-        color: #66FCF1 !important;
+        color: var(--accent) !important;
         text-align: center;
         font-size: 4.5rem;
         font-weight: 800;
         margin-bottom: 0.5rem;
         letter-spacing: 8px;
-        font-family: 'Inter', sans-serif;
     }
-    
-    /* Subtitle */
     .subtitle {
-        color: #45A29E;
+        color: var(--muted) !important;
         text-align: center;
         font-size: 1.5rem;
         margin-bottom: 3rem;
-        font-weight: 400;
         letter-spacing: 2px;
     }
-    
-    /* Selectbox container */
-    .stSelectbox {
-        max-width: 700px;
-        margin: 0 auto 2rem auto;
-    }
-    
-    /* Selectbox styling */
-    .stSelectbox > div > div {
-        background-color: #0B0C10;
-        border-radius: 12px;
-        border: 2px solid #45A29E;
-        box-shadow: 0 0 20px rgba(69, 162, 158, 0.3);
-        color: #FFFFFF;
-        font-size: 1.1rem;
-    }
-    
-    .stSelectbox label {
-        color: #66FCF1 !important;
-        font-weight: 600;
-        font-size: 1.1rem;
-        margin-bottom: 0.8rem;
-    }
-    
-    /* Dropdown text color */
-    .stSelectbox select {
-        color: #FFFFFF !important;
-    }
-    
-    /* Button styling - Cyan theme */
-    .stButton > button {
-        background: linear-gradient(135deg, #45A29E 0%, #66FCF1 100%);
-        color: #0B0C10;
-        border: none;
-        border-radius: 30px;
-        padding: 0.9rem 2.5rem;
-        font-size: 1.2rem;
-        font-weight: 700;
-        box-shadow: 0 0 25px rgba(102, 252, 241, 0.5);
-        transition: all 0.3s ease;
-        width: 100%;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 0 40px rgba(102, 252, 241, 0.8);
-        background: linear-gradient(135deg, #66FCF1 0%, #45A29E 100%);
-    }
-    
-    /* Movie card container */
+    .stTextInput, .stSelectbox { max-width: 700px; margin: 0 auto 1rem auto; }
+
     .movie-card {
-        background: #0B0C10;
+        background: var(--surface);
         border-radius: 16px;
         padding: 1.2rem;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+        box-shadow: 0 8px 20px rgba(0,0,0,0.25);
         transition: transform 0.3s ease, box-shadow 0.3s ease;
         height: 100%;
         display: flex;
         flex-direction: column;
         border: 2px solid transparent;
     }
-    
     .movie-card:hover {
         transform: translateY(-10px);
-        box-shadow: 0 12px 35px rgba(102, 252, 241, 0.4);
-        border-color: #45A29E;
+        box-shadow: 0 12px 35px rgba(var(--glow), calc(0.4 * var(--k)));
+        border-color: var(--accent2);
     }
-    
-    /* Movie title styling - WHITE */
     .movie-title {
-        height: 70px;
+        height: 3.2rem;
         overflow: hidden;
-        text-overflow: ellipsis;
         display: -webkit-box;
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
-        margin: 1rem 0;
+        margin: 0.8rem 0 0;
         font-weight: 600;
         font-size: 1.1rem;
-        color: #FFFFFF;
+        color: var(--text);
         text-align: center;
         line-height: 1.4;
     }
-    
-    /* Poster image styling */
-    img {
-        border-radius: 12px;
-        box-shadow: 0 6px 15px rgba(0,0,0,0.4);
-        transition: transform 0.3s ease;
-    }
 
-    img:hover {
-        transform: scale(1.08);
-    }
-
-    /* Posters get a fixed height so every card in a row is the same size and
-       the View Details buttons underneath line up */
+    /* every poster is 2:3, so cards and buttons line up at any screen width */
     .poster, .no-poster {
         width: 100%;
-        height: 360px;
+        aspect-ratio: 2 / 3;
+        height: auto;
         border-radius: 12px;
-        object-fit: cover;
-        box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+        object-fit: cover !important;
+        box-shadow: 0 6px 15px rgba(0,0,0,0.3);
     }
-
     .no-poster {
-        background: #0B0C10;
+        background: var(--hover);
         display: flex;
         align-items: center;
         justify-content: center;
-        color: #FFFFFF;
+        color: var(--text);
     }
 
-    /* View Details button specific styling */
     [data-testid="column"] button[kind="secondary"] {
-        background: linear-gradient(135deg, #45A29E 0%, #66FCF1 100%);
-        color: #0B0C10;
         border-radius: 25px;
         padding: 0.7rem 1.5rem;
         font-weight: 700;
         margin-top: auto;
-        border: none;
-        box-shadow: 0 0 15px rgba(102, 252, 241, 0.3);
-        text-transform: uppercase;
         letter-spacing: 1px;
     }
-    
-    [data-testid="column"] button[kind="secondary"]:hover {
-        background: linear-gradient(135deg, #66FCF1 0%, #45A29E 100%);
-        box-shadow: 0 0 25px rgba(102, 252, 241, 0.6);
-        transform: translateY(-2px);
-    }
-    
-    /* Center the show recommendations button */
-    .stButton {
-        display: flex;
-        justify-content: center;
-        margin-bottom: 3rem
-        
-    }
-    
-    /* Remove extra padding */
-    .block-container {
-        padding-top: 2rem;
-        background: #1F2833 !important;
-    }
-    
-    /* Recommendations header */
-    .recommendations-header {
-        color: #66FCF1;
-        text-align: center;
-        font-size: 2.2rem;
-        font-weight: 700;
-        margin: 3rem 0 2rem 0;
-        text-shadow: 0 0 20px rgba(102, 252, 241, 0.4);
-        letter-spacing: 3px;
-    }
-    
-    /* Loading spinner customization - WHITE TEXT */
-    .stSpinner > div {
-        border-top-color: #66FCF1 !important;
-    }
-    
-    .stSpinner > div > div {
-        color: #FFFFFF !important;
-    }
-    
-    div[data-testid="stSpinner"] {
-        color: #FFFFFF !important;
-    }
-    
-    .stSpinner div {
-        color: #FFFFFF !important;
-    }
-    
-    /* Spinner container text */
-    [data-testid="stStatusWidget"] {
-        color: #FFFFFF !important;
-    }
-    
-    [data-testid="stStatusWidget"] > div {
-        color: #FFFFFF !important;
-    }
+
+    .stSpinner > div { border-top-color: var(--accent) !important; }
+    [data-testid="stSpinner"], [data-testid="stSpinner"] * { color: var(--text) !important; }
     </style>
 """, unsafe_allow_html=True)
 
-
-# Title
 st.markdown('<div class="movie-mind-title">MOVIE MIND</div>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">DISCOVER YOUR NEXT FAVORITE MOVIE</p>', unsafe_allow_html=True)
 
+# coming back from the details page: put the last search and pick back
+st.session_state.setdefault("query", st.session_state.get("last_query", ""))
+if "last_row" in st.session_state:
+    st.session_state.setdefault("match", st.session_state["last_row"])
+
 col1, col2, col3 = st.columns([1, 2.5, 1])
 with col2:
-    # the options are row numbers, not titles, because a few titles appear
-    # twice in the dataset and picking by title would grab the wrong movie
-    selected_row = st.selectbox(
-        "Select a movie to get recommendations:",
-        options=dropdown_order,
-        format_func=lambda row: labels[row],
+    query = st.text_input(
+        f"Search {len(movies):,} movies",
+        placeholder="Type a title and press Enter, e.g. Get Out",
+        key="query",
     )
+    found = search_movies(search_text, movies["n_ratings"].to_numpy(), query)
+    if len(found) == 0:
+        st.warning(f'No movie found for "{query}". Try fewer words.')
+        st.stop()
+
+    # the options are row numbers, not titles, because a few titles appear
+    # twice and picking by title would grab the wrong movie
+    selected_row = st.selectbox(
+        "Best matches" if query else "Popular movies",
+        options=found.tolist(),
+        format_func=lambda row: options[row],
+        key="match",
+    )
+    st.session_state.last_query = query
+    st.session_state.last_row = selected_row
     if st.button("Show Recommendations", width="stretch"):
         st.session_state.show_recommendations = True
 

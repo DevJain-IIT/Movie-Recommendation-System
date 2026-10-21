@@ -158,8 +158,9 @@ python evaluate_cold.py       # cold-start benchmark, ~10 min
 
 | File | What it does |
 |---|---|
-| `app.py`, `pages/movie_details.py` | Streamlit app |
-| `recommender.py` | the signals, blending and routing |
+| `app.py`, `pages/movie_details.py` | Streamlit app: title search ranked by popularity, light/dark toggle |
+| `theme.py` | the light and dark colours shared by both pages |
+| `recommender.py` | the signals, blending, routing and title search |
 | `build.py` | builds the content and CF artifacts from MovieLens |
 | `embed_reviews.py` | match, embed and aggregate critic reviews |
 | `evaluate.py`, `evaluate_cold.py` | the two benchmarks |
