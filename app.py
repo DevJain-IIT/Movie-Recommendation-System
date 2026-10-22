@@ -53,25 +53,67 @@ st.markdown("""
         margin-bottom: 2rem;
         letter-spacing: 2px;
     }
-    /* search box, dropdown and button share one centred column */
-    .st-key-search { max-width: 700px; margin: 0 auto 2.5rem auto; gap: 1.25rem; }
+    .hint { color: var(--muted) !important; text-align: center; margin: 0; }
+    .hint b { color: var(--text); }
+    .because { margin: 0.5rem 0 1.75rem !important; }
 
-    .movie-card {
+    /* search box and its results share one centred column */
+    .st-key-search { max-width: 700px; margin: 0 auto 2.5rem auto; gap: 1rem; }
+    .st-key-results { gap: 0.5rem; }
+    .st-key-results button {
+        background: var(--surface); border: 1px solid var(--accent2);
+        border-radius: 12px; padding: 0.7rem 1rem; box-shadow: none;
+        text-transform: none; letter-spacing: 0; font-size: 1rem; font-weight: 500;
+        justify-content: flex-start; text-align: left;
+    }
+    .st-key-results button p { color: var(--text) !important; text-align: left; }
+    .st-key-results button:hover {
+        transform: none; background: var(--hover); border-color: var(--accent);
+        box-shadow: 0 0 14px rgba(var(--glow), calc(0.3 * var(--k)));
+    }
+
+    /* a card is one keyed container (poster, title, label) with an invisible
+       button stretched over all of it, so clicking anywhere opens the details */
+    [class*="st-key-card_"] {
+        position: relative;
         background: var(--surface);
         border-radius: 16px;
         padding: 1.2rem;
         box-shadow: 0 8px 20px rgba(0,0,0,0.25);
         transition: transform 0.3s ease, box-shadow 0.3s ease;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
         border: 2px solid transparent;
+        cursor: pointer;
     }
-    .movie-card:hover {
+    [class*="st-key-card_"]:hover {
         transform: translateY(-10px);
         box-shadow: 0 12px 35px rgba(var(--glow), calc(0.4 * var(--k)));
         border-color: var(--accent2);
     }
+    [class*="st-key-card_"]:focus-within { border-color: var(--accent); }
+    [class*="st-key-card_"]:has(.card-off) { cursor: not-allowed; }
+    [class*="st-key-card_"]:has(.card-off):hover { transform: none; }
+    [class*="st-key-btn_"] { position: absolute; inset: 0; z-index: 2; }
+    [class*="st-key-btn_"] > div { width: 100% !important; height: 100%; }
+    [class*="st-key-btn_"] button, [class*="st-key-btn_"] button:hover {
+        width: 100% !important; height: 100% !important; min-height: 0 !important;
+        padding: 0 !important; margin: 0 !important; opacity: 0 !important;
+        transform: none !important; box-shadow: none !important;
+        border-radius: 16px !important; cursor: inherit;
+    }
+    .view-pill {
+        margin-top: 0.9rem;
+        padding: 0.7rem 1rem;
+        border-radius: 25px;
+        text-align: center;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: var(--on-accent);
+        background: linear-gradient(135deg, var(--accent2) 0%, var(--accent) 100%);
+        transition: filter 0.3s ease;
+    }
+    [class*="st-key-card_"]:hover .view-pill { filter: brightness(1.12); }
+    .view-pill.card-off { opacity: 0.45; }
     .movie-title {
         height: 3.2rem;
         overflow: hidden;
@@ -103,14 +145,6 @@ st.markdown("""
         color: var(--text);
     }
 
-    [data-testid="stColumn"] button[kind="secondary"] {
-        border-radius: 25px;
-        padding: 0.7rem 1.5rem;
-        font-weight: 700;
-        margin-top: auto;
-        letter-spacing: 1px;
-    }
-
     .stSpinner > div { border-top-color: var(--accent) !important; }
     [data-testid="stSpinner"], [data-testid="stSpinner"] * { color: var(--text) !important; }
     </style>
@@ -119,10 +153,8 @@ st.markdown("""
 st.markdown('<div class="movie-mind-title">MOVIE MIND</div>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">DISCOVER YOUR NEXT FAVORITE MOVIE</p>', unsafe_allow_html=True)
 
-# coming back from the details page: put the last search and pick back
+# coming back from the details page: put the last search back
 st.session_state.setdefault("query", st.session_state.get("last_query", ""))
-if "last_row" in st.session_state:
-    st.session_state.setdefault("match", st.session_state["last_row"])
 
 with st.container(key="search"):
     query = st.text_input(
@@ -130,26 +162,31 @@ with st.container(key="search"):
         placeholder="Type a title and press Enter, e.g. Get Out",
         key="query",
     )
-    found = search_movies(search_text, movies["n_ratings"].to_numpy(), query)
-    if len(found) == 0:
-        st.warning(f'No movie found for "{query}". Try fewer words.')
-        st.stop()
-
-    # the options are row numbers, not titles, because a few titles appear
-    # twice and picking by title would grab the wrong movie
-    selected_row = st.selectbox(
-        "Best matches" if query else "Popular movies",
-        options=found.tolist(),
-        format_func=lambda row: options[row],
-        key="match",
-    )
     st.session_state.last_query = query
-    st.session_state.last_row = selected_row
-    if st.button("Show Recommendations", width="stretch"):
-        st.session_state.show_recommendations = True
+
+    if not query.strip():
+        st.markdown('<p class="hint">Start typing a movie title to see matches.</p>',
+                    unsafe_allow_html=True)
+    elif query != st.session_state.get("chosen_query"):
+        found = search_movies(search_text, movies["n_ratings"].to_numpy(), query, n=8)
+        if len(found) == 0:
+            st.markdown(f'<p class="hint">No movie found for "{escape(query)}". '
+                        'Try fewer words.</p>', unsafe_allow_html=True)
+        # the buttons carry row numbers, not titles, because a few titles appear
+        # twice and picking by title would grab the wrong movie
+        with st.container(key="results"):
+            for row in found.tolist():
+                if st.button(options[row], key=f"pick_{row}", width="stretch"):
+                    st.session_state.chosen = row
+                    st.session_state.chosen_query = query
+                    st.rerun()
 
 
-if st.session_state.get("show_recommendations"):
+chosen = st.session_state.get("chosen")
+if chosen is not None and query == st.session_state.get("chosen_query"):
+    st.markdown(f'<p class="hint because">Movies like <b>{escape(labels[chosen])}</b></p>',
+                unsafe_allow_html=True)
+
     # without a key every poster comes back empty, which looks like missing
     # data rather than missing configuration - so say which it is
     if not tmdb.api_key():
@@ -160,7 +197,7 @@ if st.session_state.get("show_recommendations"):
         )
 
     with st.spinner("🎬 Loading recommendations..."):
-        rows = similar_movies(signals, selected_row, n=10)
+        rows = similar_movies(signals, chosen, n=10)
         recommended = movies.loc[rows]
         # some movies have no TMDB id, so no poster
         tmdb_ids = [None if pd.isna(i) else int(i) for i in recommended["tmdbId"]]
@@ -177,21 +214,20 @@ if st.session_state.get("show_recommendations"):
             cols, chunk.iterrows(), posters[start:], tmdb_ids[start:]
         ):
             with col:
-                # poster and title go out as one block so the card is a single
-                # fixed-height element - otherwise a missing poster or a title
-                # that wraps to two lines pushes that card's button out of line
                 if poster:
                     image = f'<img class="poster" src="{poster}">'
                 else:
                     image = '<div class="no-poster">No Image</div>'
+                pill = '<div class="view-pill">View Details</div>' if tmdb_id else \
+                    '<div class="view-pill card-off">No details</div>'
 
-                st.markdown(
-                    f'<div class="movie-card">{image}'
-                    f'<div class="movie-title">{escape(labels[row])}</div></div>',
-                    unsafe_allow_html=True,
-                )
-
-                if st.button("View Details", key=f"btn_{row}", width="stretch",
-                             disabled=tmdb_id is None):
-                    st.session_state.selected_movie_id = tmdb_id
-                    st.switch_page("pages/movie_details.py")
+                with st.container(key=f"card_{row}"):
+                    st.markdown(
+                        f'<div>{image}<div class="movie-title">{escape(labels[row])}</div>{pill}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    # invisible, covers the whole card (see the css above)
+                    if st.button("View Details", key=f"btn_{row}", width="stretch",
+                                 disabled=tmdb_id is None):
+                        st.session_state.selected_movie_id = tmdb_id
+                        st.switch_page("pages/movie_details.py")
