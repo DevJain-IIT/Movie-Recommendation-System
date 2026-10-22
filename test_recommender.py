@@ -9,8 +9,7 @@ import pandas as pd
 from embed_reviews import aggregate, normalise
 from evaluate import weight_grid
 from recommender import (
-    ARTIFACTS, blend, load_artifacts, load_reviews, max_similarity, movie_labels,
-    search_movies, similar_movies, similarity,
+    ARTIFACTS, blend, load_artifacts, load_reviews, max_similarity, similar_movies, similarity,
 )
 
 movies, signals = load_artifacts()
@@ -52,23 +51,6 @@ def test_unrated_movie_without_reviews_uses_content():
     rows = similar_movies(signals, row)
     content = similarity(signals["content"], [row]).ravel()
     assert content[rows].min() > 0
-
-
-def test_search():
-    labels = movie_labels(movies).str.lower()
-    n_ratings = movies["n_ratings"].to_numpy()
-
-    def search(query):
-        return list(movie_labels(movies)[search_movies(labels, n_ratings, query)])
-
-    assert search("get out")[0] == "Get Out (2017)"
-    assert search("matrix")[0] == "The Matrix (1999)"      # a word starts with it
-    assert search("  DARK KNIGHT ")[0] == "The Dark Knight (2008)"
-    assert search("the matrix")[0] == "The Matrix (1999)"  # title starts with it
-    assert search("zzzxqj") == []
-    popular = search("")
-    assert len(popular) == 20
-    assert popular[0] == "The Shawshank Redemption (1994)"
 
 
 def test_max_similarity_in_batches():

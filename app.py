@@ -1,11 +1,20 @@
+import hashlib
+import json
 from html import escape
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 import theme
 import tmdb
-from recommender import load_artifacts, movie_labels, search_movies, similar_movies
+from recommender import load_artifacts, movie_labels, similar_movies
+
+# the search bar runs in the browser, so typing never waits on the server
+SEARCH_DIR = Path(__file__).parent / "search_component"
+movie_search = components.declare_component("movie_search", path=str(SEARCH_DIR))
 
 st.set_page_config(
     page_title="Movie Mind",
@@ -17,17 +26,27 @@ st.set_page_config(
 
 @st.cache_resource
 def load_recommender():
-    """Load the prebuilt vectors once and share them between sessions."""
+    """Load the prebuilt vectors once and share them between sessions.
+
+    Also writes the title list the search bar downloads: one row per movie,
+    most-rated first. The browser caches it, so it is fetched once.
+    """
     movies, signals = load_artifacts()
-    labels = movie_labels(movies)
-    genres = movies["genres"].str.split("|").str[:3].str.join(", ")
-    options = (labels + "  ·  " + genres).tolist()
-    return movies, signals, labels.tolist(), labels.str.lower(), options
+    genres = movies["genres"].str.split("|").str[:2].str.join(", ")
+    titles = [
+        [int(row), movies.at[row, "title"],
+         None if pd.isna(movies.at[row, "year"]) else int(movies.at[row, "year"]), genres[row]]
+        for row in np.argsort(-movies["n_ratings"].to_numpy(), kind="stable")
+    ]
+    data = json.dumps(titles, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    (SEARCH_DIR / "titles.json").write_bytes(data)
+    version = hashlib.md5(data).hexdigest()[:8]
+    return movies, signals, movie_labels(movies).tolist(), version
 
 
-movies, signals, labels, search_text, options = load_recommender()
+movies, signals, labels, titles_version = load_recommender()
 
-theme.apply()
+colors = theme.apply()
 
 st.markdown("""
     <style>
@@ -57,20 +76,7 @@ st.markdown("""
     .hint b { color: var(--text); }
     .because { margin: 0.5rem 0 1.75rem !important; }
 
-    /* search box and its results share one centred column */
-    .st-key-search { max-width: 700px; margin: 0 auto 2.5rem auto; gap: 1rem; }
-    .st-key-results { gap: 0.5rem; }
-    .st-key-results button {
-        background: var(--surface); border: 1px solid var(--accent2);
-        border-radius: 12px; padding: 0.7rem 1rem; box-shadow: none;
-        text-transform: none; letter-spacing: 0; font-size: 1rem; font-weight: 500;
-        justify-content: flex-start; text-align: left;
-    }
-    .st-key-results button p { color: var(--text) !important; text-align: left; }
-    .st-key-results button:hover {
-        transform: none; background: var(--hover); border-color: var(--accent);
-        box-shadow: 0 0 14px rgba(var(--glow), calc(0.3 * var(--k)));
-    }
+    .st-key-search { max-width: 744px; margin: 0 auto 1rem auto; }
 
     /* a card is one keyed container (poster, title, label) with an invisible
        button stretched over all of it, so clicking anywhere opens the details */
@@ -153,37 +159,24 @@ st.markdown("""
 st.markdown('<div class="movie-mind-title">MOVIE MIND</div>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">DISCOVER YOUR NEXT FAVORITE MOVIE</p>', unsafe_allow_html=True)
 
-# coming back from the details page: put the last search back
-st.session_state.setdefault("query", st.session_state.get("last_query", ""))
-
+chosen = st.session_state.get("chosen")
 with st.container(key="search"):
-    query = st.text_input(
-        f"Search {len(movies):,} movies",
-        placeholder="Type a title and press Enter, e.g. Get Out",
-        key="query",
+    picked = movie_search(
+        colors=colors,
+        count=len(movies),
+        version=titles_version,
+        initial=labels[chosen] if chosen is not None else "",
+        key="movie_search",
+        default=None,
     )
-    st.session_state.last_query = query
-
-    if not query.strip():
-        st.markdown('<p class="hint">Start typing a movie title to see matches.</p>',
-                    unsafe_allow_html=True)
-    elif query != st.session_state.get("chosen_query"):
-        found = search_movies(search_text, movies["n_ratings"].to_numpy(), query, n=8)
-        if len(found) == 0:
-            st.markdown(f'<p class="hint">No movie found for "{escape(query)}". '
-                        'Try fewer words.</p>', unsafe_allow_html=True)
-        # the buttons carry row numbers, not titles, because a few titles appear
-        # twice and picking by title would grab the wrong movie
-        with st.container(key="results"):
-            for row in found.tolist():
-                if st.button(options[row], key=f"pick_{row}", width="stretch"):
-                    st.session_state.chosen = row
-                    st.session_state.chosen_query = query
-                    st.rerun()
-
+# the component returns the row the person picked; "at" tells a new pick
+# apart from the same value being returned again on a later rerun
+if picked and picked.get("at") != st.session_state.get("picked_at"):
+    st.session_state.picked_at = picked["at"]
+    st.session_state.chosen = picked["row"]
 
 chosen = st.session_state.get("chosen")
-if chosen is not None and query == st.session_state.get("chosen_query"):
+if chosen is not None:
     st.markdown(f'<p class="hint because">Movies like <b>{escape(labels[chosen])}</b></p>',
                 unsafe_allow_html=True)
 

@@ -22,21 +22,6 @@ CSS = """
 .stApp :where(h1, h2, h3, li) { color: var(--text); }
 .stApp hr { border-color: var(--accent2); }
 
-/* search box */
-.stTextInput label { color: var(--accent) !important; font-weight: 600; }
-.stTextInput > div > div {
-    background: var(--surface) !important; border: 2px solid var(--accent2) !important;
-    border-radius: 12px; color: var(--text) !important;
-    box-shadow: 0 0 20px rgba(var(--glow), calc(0.3 * var(--k)));
-}
-.stTextInput input { color: var(--text) !important; font-size: 1.1rem; background: transparent !important; }
-.stTextInput input::placeholder { color: var(--muted) !important; opacity: 1; }
-.stTextInput [data-baseweb="input"] { background-color: var(--surface) !important; }
-.stTextInput [data-baseweb="base-input"] { background-color: transparent !important; border-color: transparent !important; box-shadow: none !important; }
-.stTextInput > div > div:focus-within {
-    border-color: var(--accent) !important; outline: none !important;
-    box-shadow: 0 0 20px rgba(var(--glow), calc(0.5 * var(--k))) !important;
-}
 [data-testid="stCheckbox"] p { color: var(--text) !important; }  /* the toggle is a checkbox */
 .st-key-themebar { align-items: flex-end; }
 .st-key-themebar label > div:first-child { background-color: var(--track) !important; }
@@ -62,7 +47,7 @@ CSS = """
 
 
 def apply():
-    """Draw the toggle and inject the theme. Call once per page, after set_page_config."""
+    """Draw the toggle, inject the theme and return its colors. Call after set_page_config."""
     # Streamlit drops a widget's value when you leave the page it is on; setting
     # it again at the top of every page keeps it. Dark is the default.
     st.session_state["dark"] = st.session_state.get("dark", True)
@@ -74,3 +59,4 @@ def apply():
     variables = ":root{" + ";".join(f"--{name}:{value}" for name, value in colors.items()) + "}"
     css = "".join(line.strip() for line in (variables + CSS).splitlines())
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+    return colors

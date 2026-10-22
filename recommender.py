@@ -6,7 +6,6 @@ Three signals, each stored as one unit-length vector per movie:
   reviews - averaged sentence embeddings of critic reviews
 """
 
-import re
 from pathlib import Path
 
 import numpy as np
@@ -140,28 +139,6 @@ def movie_labels(movies):
     """'The Matrix (1999)' for every movie."""
     years = movies["year"].map(lambda y: f" ({int(y)})" if pd.notna(y) else "")
     return movies["title"] + years
-
-
-def search_movies(labels, n_ratings, query, n=20):
-    """Rows matching the query, best first.
-
-    Titles that start with the query come first (ignoring a leading The/A/An),
-    then titles with a word that starts with it, then titles that contain it.
-    Within each group the most rated movie wins, so "matrix" gives The Matrix
-    before obscure films. `labels` must be lowercase.
-    """
-    query = query.lower().strip()
-    if not query:
-        return np.argsort(-n_ratings, kind="stable")[:n]
-
-    starts = labels.str.contains(r"^(?:the |an |a )?" + re.escape(query), regex=True).to_numpy()
-    word_starts = labels.str.contains(" " + query, regex=False).to_numpy()
-    contains = labels.str.contains(query, regex=False).to_numpy()
-
-    rows = np.flatnonzero(contains)
-    group = np.where(starts, 0, np.where(word_starts, 1, 2))[rows]
-    order = np.lexsort((-n_ratings[rows], group))
-    return rows[order][:n]
 
 
 def similarity(matrix, rows):
