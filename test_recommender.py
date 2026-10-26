@@ -37,7 +37,7 @@ def test_dark_knight():
 
 
 def test_unrated_movie():
-    row = movies.index[(movies["n_ratings"] == 0) & (signals["content"].getnnz(axis=1) > 5)][0]
+    row = movies.index[(movies["n_ratings"] == 0) & (signals["content"].by_movie.getnnz(axis=1) > 5)][0]
     assert not similarity(signals["cf"], [row]).any()
     assert len(similar_movies(signals, row)) == 10
 
@@ -46,7 +46,7 @@ def test_unrated_movie_without_reviews_uses_content():
     unrated = movies["n_ratings"].to_numpy() == 0
     reviewed = np.zeros(len(movies), dtype=bool)
     reviewed[signals["reviews"].rows] = True
-    has_tags = signals["content"].getnnz(axis=1) > 5
+    has_tags = signals["content"].by_movie.getnnz(axis=1) > 5
     row = np.flatnonzero(unrated & ~reviewed & has_tags)[0]
     rows = similar_movies(signals, row)
     content = similarity(signals["content"], [row]).ravel()
@@ -57,6 +57,16 @@ def test_max_similarity_in_batches():
     liked = np.arange(0, 3000, 7)
     expected = similarity(signals["content"], liked).max(axis=1)
     assert np.allclose(max_similarity(signals["content"], liked, batch=64), expected)
+
+
+def test_tfidf_matrix_matches_plain_sparse():
+    content = signals["content"]
+    gandhi = movies.index[movies["title"] == "Gandhi"][0]
+    most_words = int(np.argmax(content.by_movie.getnnz(axis=1)))
+    # Gandhi goes the by-word way; the wordiest movie and a batch go row by row
+    for rows in [[gandhi], [most_words], list(range(0, 3000, 7))]:
+        query = content.by_movie[rows].T.toarray()
+        assert np.allclose(similarity(content, rows), content.by_movie @ query, atol=1e-6)
 
 
 def test_blend():

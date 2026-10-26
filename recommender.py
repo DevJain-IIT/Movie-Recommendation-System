@@ -93,6 +93,31 @@ def svd_movie_vectors(movie_factors, singular_values):
     return normalize(movie_factors * singular_values).astype(np.float32)
 
 
+class TfidfMatrix:
+    """The TF-IDF matrix stored twice: by movie (CSR) and by word (CSC).
+
+    A query movie has only a few words, so multiplying just those word columns
+    skips most of the matrix. That only pays off while those columns hold a
+    small share of all the values; past that, one pass over the rows is faster.
+    """
+
+    def __init__(self, matrix):
+        self.by_movie = matrix.tocsr()
+        self.by_word = matrix.tocsc()
+        self.shape = matrix.shape
+        self.word_counts = np.diff(self.by_word.indptr)  # movies per word
+
+    def __getitem__(self, rows):
+        return self.by_movie[rows]
+
+    def __matmul__(self, query):
+        words = np.flatnonzero(query.any(axis=1))
+        # 25% is where the two were equally fast when timed (benchmark.py)
+        if self.word_counts[words].sum() < 0.25 * self.by_movie.nnz:
+            return self.by_word[:, words] @ query[words]
+        return self.by_movie @ query
+
+
 class ReviewMatrix:
     """Review vectors for the ~14k reviewed movies; every other movie is a zero row.
 
@@ -127,7 +152,7 @@ def load_reviews(n_movies, path=ARTIFACTS / "reviews.npz"):
 def load_artifacts(path=ARTIFACTS):
     movies = pd.read_parquet(path / "movies.parquet")
     signals = {
-        "content": sparse.load_npz(path / "content.npz").tocsr(),
+        "content": TfidfMatrix(sparse.load_npz(path / "content.npz")),
         "cf": np.load(path / "cf.npy").astype(np.float32),
     }
     if (path / "reviews.npz").exists():

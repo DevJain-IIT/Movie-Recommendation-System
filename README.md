@@ -83,11 +83,17 @@ sorting all 87K scores.
 | `reviews.npz` | 14,180 x 384, float16 | 10.1 MB |
 | `movies.parquet` | catalogue | 3.0 MB |
 
-`python benchmark.py` times 1,000 full queries after warm-up: **5–9 ms
-median** on a laptop CPU, depending on load. Two details mattered:
+`python benchmark.py` times 1,000 full queries after warm-up: **2.9 ms
+median, 4.7 ms p95** on a laptop CPU. Three details mattered:
 
 - Multiplying the sparse TF-IDF matrix by a *dense* query vector is 3x faster
   than sparse x sparse.
+- A query movie has few words (the median movie has 6 of 35,256), so most of
+  that product multiplies by zero. `TfidfMatrix` keeps a second, by-word (CSC)
+  copy, which works like an inverted index, and multiplies only the query's
+  word columns. That copies those columns, so it's only faster while they hold
+  under ~25% of all values. Wordy movies and evaluation batches go the normal
+  way. This took the median from 5.7 to 2.9 ms for 13 MB more RAM.
 - The review vectors cover only 16% of movies, but each of those rows is fully
   dense. Stored as a sparse matrix they took 6.9 ms per query; as one compact
   dense block with an index (`ReviewMatrix`) they take 0.95 ms.
